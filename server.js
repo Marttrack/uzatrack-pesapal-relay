@@ -16,6 +16,7 @@ const AFRICA_CURRENCIES = new Set([
 const PESAPAL_HEADERS = {
   "Accept": "application/json",
   "Content-Type": "application/json",
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 };
 
 function getPesapalBaseUrl() {
@@ -23,11 +24,20 @@ function getPesapalBaseUrl() {
   return isLive ? "https://pesapal.com" : "https://pesapal.com";
 }
 
+async function parseJsonSafe(res, label) {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`${label} returned HTML/non-JSON (HTTP ${res.status}): ${text.slice(0, 140)}`);
+  }
+}
+
 async function getPesapalToken() {
   const consumerKey = (process.env.PESAPAL_CONSUMER_KEY || "").trim();
   const consumerSecret = (process.env.PESAPAL_CONSUMER_SECRET || "").trim();
   if (!consumerKey || !consumerSecret) {
-    throw new Error("Missing PESAPAL_CONSUMER_KEY or PESAPAL_CONSUMER_SECRET on relay server.");
+    throw new Error("Missing PESAPAL_CONSUMER_KEY or PESAPAL_CONSUMER_SECRET in Vercel Environment Variables.");
   }
 
   const res = await fetch(`${getPesapalBaseUrl()}/api/Auth/RequestToken`, {
@@ -39,9 +49,9 @@ async function getPesapalToken() {
     }),
   });
 
-  const data = await res.json();
+  const data = await parseJsonSafe(res, "Pesapal Auth");
   if (!data?.token) {
-    throw new Error(data?.error?.message || data?.message || "Failed to get Pesapal token");
+    throw new Error(data?.error?.message || data?.message || JSON.stringify(data));
   }
   return data.token;
 }
@@ -85,9 +95,9 @@ app.post("/pesapal-checkout", async (req, res) => {
           ipn_notification_type: "GET",
         }),
       });
-      const regData = await regRes.json();
+      const regData = await parseJsonSafe(regRes, "Pesapal RegisterIPN");
       if (!regData?.ipn_id) {
-        throw new Error(regData?.error?.message || "Could not register Pesapal IPN URL");
+        throw new Error(regData?.error?.message || JSON.stringify(regData));
       }
       ipnId = regData.ipn_id;
     }
@@ -113,9 +123,9 @@ app.post("/pesapal-checkout", async (req, res) => {
       }),
     });
 
-    const orderData = await orderRes.json();
+    const orderData = await parseJsonSafe(orderRes, "Pesapal Order");
     if (!orderData?.redirect_url) {
-      throw new Error(orderData?.error?.message || orderData?.message || "Pesapal order failed");
+      throw new Error(orderData?.error?.message || orderData?.message || JSON.stringify(orderData));
     }
 
     res.json({
@@ -147,7 +157,7 @@ app.all("/pesapal-ipn", async (req, res) => {
       )}`,
       { headers: { ...PESAPAL_HEADERS, Authorization: `Bearer ${token}` } }
     );
-    const statusData = await statusRes.json();
+    const statusData = await parseJsonSafe(statusRes, "Pesapal Status");
     const isCompleted =
       Number(statusData?.status_code) === 1 ||
       String(statusData?.payment_status_description || "").toUpperCase() === "COMPLETED";
